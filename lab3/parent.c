@@ -41,12 +41,12 @@ static int create_shm(const char *name)
 	if (fd == -1) {
 		const char msg[] = "error: failed to create SHM\n";
 		write(STDERR_FILENO, msg, sizeof(msg) - 1);
-		_exit(EXIT_FAILURE);
+		exit(EXIT_FAILURE);
 	}
 	if (ftruncate(fd, SHM_SIZE) == -1) {
 		const char msg[] = "error: failed to resize SHM\n";
 		write(STDERR_FILENO, msg, sizeof(msg) - 1);
-		_exit(EXIT_FAILURE);
+		exit(EXIT_FAILURE);
 	}
 	return fd;
 }
@@ -58,18 +58,18 @@ static char *map_shm(int fd)
 	if (p == MAP_FAILED) {
 		const char msg[] = "error: failed to map SHM\n";
 		write(STDERR_FILENO, msg, sizeof(msg) - 1);
-		_exit(EXIT_FAILURE);
+		exit(EXIT_FAILURE);
 	}
 	return p;
 }
 
 static sem_t *create_sem(const char *name)
 {
-	sem_t *s = sem_open(name, O_RDWR | O_CREAT | O_TRUNC, 0600, 1);
+	sem_t *s = sem_open(name, O_RDWR | O_CREAT | O_TRUNC, 0600, 0);
 	if (s == SEM_FAILED) {
 		const char msg[] = "error: failed to create semaphore\n";
 		write(STDERR_FILENO, msg, sizeof(msg) - 1);
-		_exit(EXIT_FAILURE);
+		exit(EXIT_FAILURE);
 	}
 	return s;
 }
@@ -92,15 +92,13 @@ int main(void)
 
 	char p2c1_shm_name[64], c1c2_shm_name[64], c2p_shm_name[64];
 	char p2c1_sem_name[64], c1c2_sem_name[64], c2p_sem_name[64];
-    char sync_sem_name[64];
 
 	make_name(p2c1_shm_name, "/labs-p2c1-",  ppid);
     make_name(c1c2_shm_name, "/labs-c1c2-",  ppid);
     make_name(c2p_shm_name,  "/labs-c2p-",   ppid);
-    make_name(p2c1_sem_name, "/labs-sp2c1-", ppid);
-    make_name(c1c2_sem_name, "/labs-sc1c2-", ppid);
-    make_name(c2p_sem_name,  "/labs-sc2p-",  ppid);
-    make_name(sync_sem_name, "/labs-sync-", ppid);
+    make_name(p2c1_sem_name, "/labs-sem-p-c1-", ppid);
+    make_name(c1c2_sem_name, "/labs-sem-c1-c2-", ppid);
+    make_name(c2p_sem_name,  "/labs-sem-c2-p-",  ppid);
 
 	int p2c1_fd = create_shm(p2c1_shm_name);
 	int c1c2_fd = create_shm(c1c2_shm_name);
@@ -117,12 +115,6 @@ int main(void)
 	sem_t *p2c1_sem = create_sem(p2c1_sem_name);
 	sem_t *c1c2_sem = create_sem(c1c2_sem_name);
 	sem_t *c2p_sem  = create_sem(c2p_sem_name);
-    sem_t *sync_sem = sem_open(sync_sem_name, O_RDWR | O_CREAT | O_TRUNC, 0600, 0);
-	if (sync_sem == SEM_FAILED) {
-		const char msg[] = "error: failed to create semaphore\n";
-		write(STDERR_FILENO, msg, sizeof(msg) - 1);
-		_exit(EXIT_FAILURE);
-	}
 
 	pid_t child1 = fork();
 	if (child1 == 0) {
@@ -130,11 +122,11 @@ int main(void)
 		execv(CHILD1_PROGRAM, args);
 		const char msg[] = "error: failed to exec child1\n";
 		write(STDERR_FILENO, msg, sizeof(msg) - 1);
-		_exit(EXIT_FAILURE);
+		exit(EXIT_FAILURE);
 	} else if (child1 == -1) {
 		const char msg[] = "error: failed to fork child1\n";
 		write(STDERR_FILENO, msg, sizeof(msg) - 1);
-		_exit(EXIT_FAILURE);
+		exit(EXIT_FAILURE);
 	}
 
 	pid_t child2 = fork();
@@ -143,11 +135,11 @@ int main(void)
 		execv(CHILD2_PROGRAM, args);
 		const char msg[] = "error: failed to exec child2\n";
 		write(STDERR_FILENO, msg, sizeof(msg) - 1);
-		_exit(EXIT_FAILURE);
+		exit(EXIT_FAILURE);
 	} else if (child2 == -1) {
 		const char msg[] = "error: failed to fork child2\n";
 		write(STDERR_FILENO, msg, sizeof(msg) - 1);
-		_exit(EXIT_FAILURE);
+		exit(EXIT_FAILURE);
 	}
 
 	{
@@ -168,12 +160,11 @@ int main(void)
 		if (bytes == -1) {
 			const char msg[] = "error: failed to read stdin\n";
 			write(STDERR_FILENO, msg, sizeof(msg) - 1);
-			_exit(EXIT_FAILURE);
+			exit(EXIT_FAILURE);
 		}
 
 		bool eof = (bytes == 0 || buf[0] == '\n');
 
-		sem_wait(p2c1_sem);
 		{
 			uint32_t *len = (uint32_t *)p2c1_buf;
 			char     *txt = p2c1_buf + sizeof(uint32_t);
@@ -187,8 +178,6 @@ int main(void)
 		sem_post(p2c1_sem);
 
 		if (eof) { running = false; break; }
-
-        sem_wait(sync_sem);
 		sem_wait(c2p_sem);
 		{
 			uint32_t *len = (uint32_t *)c2p_buf;
@@ -201,20 +190,27 @@ int main(void)
 				*len = 0;
 			}
 		}
-		sem_post(c2p_sem);
 	}
 
-	waitpid(child1, NULL, 0);
-	waitpid(child2, NULL, 0);
+	pid_t exitd1 = wait(NULL);
+    {
+        print_uint(STDOUT_FILENO, exitd1);
+        const char msg[] = " exited.\n";
+        write(STDOUT_FILENO, msg, sizeof(msg) - 1);
+    }
+    pid_t exitd2 = wait(NULL);
+    {
+        print_uint(STDOUT_FILENO, exitd2);
+        const char msg[] = " exited.\n";
+        write(STDOUT_FILENO, msg, sizeof(msg) - 1);
+    }
 
 	sem_unlink(p2c1_sem_name);
 	sem_unlink(c1c2_sem_name);
 	sem_unlink(c2p_sem_name);
-    sem_unlink(sync_sem_name);
 	sem_close(p2c1_sem);
 	sem_close(c1c2_sem);
 	sem_close(c2p_sem);
-    sem_close(sync_sem);
 
 	munmap(p2c1_buf, SHM_SIZE);
 	munmap(c1c2_buf, SHM_SIZE);

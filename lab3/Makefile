@@ -1,5 +1,5 @@
 CC      = gcc
-CFLAGS  = -std=c11 -Wall -Wextra -O2 -D_POSIX_C_SOURCE=200809L
+CFLAGS  = -std=c99
 LDLIBS  = -pthread
 
 all: parent child1 child2
